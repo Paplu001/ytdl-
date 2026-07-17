@@ -30,7 +30,16 @@ import traceback
 import uuid
 import zipfile
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
+
+
+def _url_encode_path(rel_path: str) -> str:
+    """URL-encode each path segment (keeps '/' as separator) so filenames
+    with #, ?, &, %, emoji, or spaces don't break <a href> links.
+    Without this, a '#' in a filename gets treated as a URL fragment by the
+    browser and everything after it is silently dropped from the request,
+    causing 'File wasn't available on site' download failures."""
+    return "/".join(quote(part, safe="") for part in rel_path.split("/"))
 
 def _auto_install(pkgs: list[str]) -> None:
     import subprocess
@@ -94,6 +103,39 @@ JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 MAX_LOG_LINES = 250
 
+# ---------------- auto-cleanup (keeps free-tier disk from filling up) ----------------
+# Files older than this get deleted automatically in the background.
+# Change via env var if you want a different retention window.
+CLEANUP_MAX_AGE_SECONDS = int(os.environ.get("CLEANUP_MAX_AGE_MINUTES", "30")) * 60
+CLEANUP_INTERVAL_SECONDS = 5 * 60  # how often the cleanup sweep runs
+
+
+def _cleanup_old_downloads_forever() -> None:
+    """Background loop: deletes finished downloads older than CLEANUP_MAX_AGE_SECONDS
+    so a long-running free-tier instance never fills its (ephemeral) disk."""
+    while True:
+        time.sleep(CLEANUP_INTERVAL_SECONDS)
+        try:
+            now = time.time()
+            for fp in list(DOWNLOADS_DIR.rglob("*")):
+                if not fp.is_file():
+                    continue
+                try:
+                    if now - fp.stat().st_mtime > CLEANUP_MAX_AGE_SECONDS:
+                        fp.unlink()
+                except OSError:
+                    continue
+            # remove now-empty subfolders (e.g. old playlist folders)
+            for d in list(DOWNLOADS_DIR.glob("*")):
+                if d.is_dir():
+                    try:
+                        if not any(d.iterdir()):
+                            d.rmdir()
+                    except OSError:
+                        continue
+        except Exception:
+            traceback.print_exc()
+
 
 def _list_downloaded_files() -> list[dict]:
     """List every file inside DOWNLOADS_DIR (recursive) with metadata for the UI library."""
@@ -109,7 +151,7 @@ def _list_downloaded_files() -> list[dict]:
             out.append({
                 "name": fp.name,
                 "path": rel,
-                "url": "/downloads/" + rel,
+                "url": "/downloads/" + _url_encode_path(rel),
                 "size_mb": round(st.st_size / (1024 * 1024), 2),
                 "mtime": int(st.st_mtime),
                 "is_zip": fp.suffix.lower() == ".zip",
@@ -494,7 +536,7 @@ def run_download(job_id: str) -> None:
                 result_links.append({
                     "name": os.path.basename(fp),
                     "size_mb": round(os.path.getsize(fp) / (1024 * 1024), 1),
-                    "url": "/" + rel,
+                    "url": "/" + _url_encode_path(rel),
                 })
         else:
             # Zip everything, delete originals.
@@ -515,7 +557,7 @@ def run_download(job_id: str) -> None:
             result_links.append({
                 "name": zip_name,
                 "size_mb": round(zip_path.stat().st_size / (1024 * 1024), 1),
-                "url": "/" + rel,
+                "url": "/" + _url_encode_path(rel),
                 "is_zip": True,
                 "file_count": len(files),
             })
@@ -1595,6 +1637,8 @@ def main():
     else:
         print(f"\n  🌐 Open in browser:  http://{host}\n")
     print("  (Ctrl+C to stop)\n")
+    print(f"  🧹 Auto-cleanup: files older than {CLEANUP_MAX_AGE_SECONDS // 60} min are deleted automatically.\n")
+    threading.Thread(target=_cleanup_old_downloads_forever, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
