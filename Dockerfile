@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
@@ -11,22 +15,23 @@ RUN apt-get update && apt-get install -y \
 # Install Deno
 RUN curl -fsSL https://deno.land/install.sh | sh
 
+# Add Deno to PATH
 ENV PATH="/root/.deno/bin:${PATH}"
 
-WORKDIR /app
+# Verify Deno installation
+RUN deno --version
 
-# Copy requirements first (better cache)
+# Copy Python requirements
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy project
+# Copy project files
 COPY . .
 
-# Render provides PORT environment variable
-ENV PORT=10000
-
+# Render uses PORT environment variable
 EXPOSE 10000
 
 CMD ["python", "webapp.py"]
