@@ -5,11 +5,15 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies
+# NOTE: "unzip" is required by the Deno install script below — without it,
+# the RUN curl ... | sh step fails on python:3.12-slim (unzip isn't present
+# by default in this base image).
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     aria2 \
     curl \
     ca-certificates \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Deno
@@ -31,7 +35,8 @@ RUN pip install --upgrade pip && \
 # Copy project files
 COPY . .
 
-# Render uses PORT environment variable
+# Render assigns the actual port at runtime via the PORT env var (webapp.py
+# reads it). This EXPOSE is just documentation for local `docker run`.
 EXPOSE 10000
 
 CMD ["python", "webapp.py"]
